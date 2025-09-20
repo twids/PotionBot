@@ -441,8 +441,9 @@ elseif Settings and Settings.RegisterAddOnCategory and Settings.RegisterCanvasLa
     Settings.RegisterAddOnCategory(category)
 end
 
-SLASH_PotionBot1 = "/hb"
-SLASH_PotionBot2 = "/PotionBot"
+SLASH_PotionBot1 = "/pb"
+SLASH_PotionBot2 = "/pp"
+SLASH_PotionBot3 = "/potionbot"
 
 function SlashCmdList.PotionBot()
     if InterfaceOptionsFrame_OpenToCategory then

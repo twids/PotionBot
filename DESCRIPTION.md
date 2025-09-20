@@ -67,7 +67,7 @@ Uses efficient event handling to minimize performance impact:
 2. Log in or `/reload` to activate
 3. The addon automatically creates the two macros
 4. Drag macros to action bars or create keybinds
-5. Optionally configure preferences with `/pb` or `/potionbot`
+5. Optionally configure preferences with `/pb`, `/pp`, or `/potionbot`
 
 ### Daily Usage
 - Use the macros like any other action bar button
@@ -77,7 +77,7 @@ Uses efficient event handling to minimize performance impact:
 
 ### Quality of Life Features
 - **Saved Settings**: Preferences persist across sessions
-- **Slash Commands**: Easy access to configuration (`/pb`, `/potionbot`)
+- **Slash Commands**: Easy access to configuration (`/pb`, `/pp`, `/potionbot`)
 - **Visual Indicators**: Color-coded addon messages for status updates
 - **Error Handling**: Graceful handling of edge cases and missing items
 

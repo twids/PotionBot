@@ -22,7 +22,7 @@ PotionBot is a World of Warcraft addon that automatically creates and updates ma
 
 ## Slash Commands
 
-- `/hb` or `/PotionBot` - Opens the configuration panel
+- `/pb`, `/pp`, or `/potionbot` - Opens the configuration panel
 
 ## How It Works
 
@@ -43,12 +43,6 @@ The created macros use:
 1. Download and extract to your `Interface/AddOns/` folder
 2. Restart WoW or use `/reload`
 3. Configure through Interface Options or use `/hb`
-
-## Compatibility
-
-- **Classic Era (Vanilla)**: Full support
-- **Cataclysm Classic**: Full support  
-- **Retail (Dragonflight/War Within)**: Full support
 
 ## Credits
 

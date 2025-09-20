@@ -17,7 +17,7 @@
 - Proper event handling for bag updates and player state changes
 
 ### Slash Commands
-- `/hb` or `/PotionBot` - Opens configuration panel
+- `/pb`, `/pp`, or `/potionbot` - Opens configuration panel
 
 ### Installation
 - Extract to Interface/AddOns/PotionBot/
