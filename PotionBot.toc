@@ -1,0 +1,13 @@
+## Interface: 110002, 40400, 11503
+## Title: |cff69ccf0PotionBot|r
+## Notes: Creates and updates macros with the best health and mana potions in your bags, favoring conjured items, so you only need one button for each on your bars. Based on DrinkBot.
+## Author: Funki (based on original DrinkBot)
+## Version: 5.1.0
+## IconTexture: Interface\Icons\Inv_drink_20
+## SavedVariables: PotionBotVariables
+
+
+Bindings\Bindings_Mainline.lua
+Bindings\Bindings_Cata.lua
+Bindings\Bindings_Vanilla.lua
+PotionBot.lua

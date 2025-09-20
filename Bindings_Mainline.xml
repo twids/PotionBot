@@ -1,0 +1,7 @@
+<Bindings>
+  <Binding name="MACRO ManaPotionBot" category="|cff69ccf0PotionBot|r">
+  </Binding>
+  
+   <Binding name="MACRO HealthPotionBot" category="|cff69ccf0PotionBot|r">
+  </Binding>
+</Bindings>
