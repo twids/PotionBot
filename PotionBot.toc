@@ -3,7 +3,7 @@
 ## Notes: Creates and updates macros with the best health and mana potions in your bags, favoring conjured items, so you only need one button for each on your bars. Based on DrinkBot.
 ## Author: Funki (based on original DrinkBot)
 ## Version: 5.1.0
-## IconTexture: Interface\Icons\Inv_drink_20
+## IconTexture: Interface\AddOns\PotionBot\logo.png
 ## SavedVariables: PotionBotVariables
 
 
