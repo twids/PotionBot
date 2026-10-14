@@ -1,25 +1,22 @@
-# PotionBot - Quick Summary
+# PotionBot
 
-## What It Does
-PotionBot automatically creates and maintains two macros (`HealthPotionBot` and `ManaPotionBot`) that always use the best available potions in your bags.
+Two automatically maintained macros for WoW Forever beta:
 
-## Key Features
-- **Smart Detection**: Scans bags for health/mana potions, elixirs, and flasks
-- **Priority System**: Healthstones > Health Potions, Mana Gems > Mana Potions
-- **Auto-Update**: Macros refresh when you loot new items or change bags
-- **One-Click Use**: Bind the macros to keys for instant potion consumption
-- **Multi-Version**: Works on Classic Era, Cataclysm Classic, and Retail WoW
+| Macro | Out of combat | In combat |
+| --- | --- | --- |
+| HealthPotionBot | Food | Healthstone or healing potion |
+| ManaPotionBot | Water | Mana gem or mana potion |
 
-## Installation
-1. Extract to `Interface/AddOns/PotionBot/`
-2. Restart WoW or `/reload`
-3. Type `/pb` to configure
-4. Bind the created macros to your action bars
+Secure combat/nocombat conditions choose the action; bag selections and macro
+writes happen outside combat. Healthstones and mana gems have priority.
 
-## Usage
-- The addon creates two macros automatically: `HealthPotionBot` and `ManaPotionBot`
-- Drag these macros to your action bars or bind them to keys
-- Use them like any other button - they'll always use your best available potion
-- Configure which types of potions to prioritize with `/pb` or `/potionbot`
+Open /pb to enable the macros, prefer buff food while Well Fed is missing,
+and arrange food stats with Up/Down buttons. Spirit is included. The order
+is saved. With Well Fed already active, plain food is preferred.
 
-*Based on the original DrinkBot - modified for potion management instead of food/drinks.*
+Install under Interface/AddOns/PotionBot, /reload, and put the macros on your
+action bars. Use /pb status or /pb diagnose for selection details.
+
+Targets Forever Interface 16001 with English tooltip parsing. Local Lua 5.1
+tests pass; live compatibility still requires in-game checks. See README.md
+for validation, fallback behavior, supported stats and limitations.
