@@ -1,0 +1,84 @@
+name: Build and package
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      zip_filename: ${{ steps.package.outputs.zip_filename }}
+      version: ${{ steps.package.outputs.version }}
+      prerelease: ${{ steps.package.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install --target .tools -r tests/requirements.txt
+      - name: Verify addon behavior
+        run: python tests/verify.py
+      - name: Verify packaging
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Build installable ZIP and WowUp metadata
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          args=()
+          if [[ -n "$RELEASE_TAG" ]]; then args+=(--tag "$RELEASE_TAG"); fi
+          python scripts/build.py "${args[@]}"
+      - name: Upload tested package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: PotionBot-${{ github.sha }}
+          path: |
+            .artifacts/build/${{ steps.package.outputs.zip_filename }}
+            .artifacts/build/release.json
+            .artifacts/build/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Download the tested package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: PotionBot-${{ github.sha }}
+          path: package
+      - name: Verify and publish GitHub Release assets
+        working-directory: package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ZIP_FILENAME: ${{ needs.build.outputs.zip_filename }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          sha256sum --check SHA256SUMS.txt
+          args=()
+          if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "$ZIP_FILENAME" release.json SHA256SUMS.txt \
+            --verify-tag --draft --title "PotionBot $VERSION" --generate-notes "${args[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false
