@@ -1,7 +1,7 @@
 ## Interface: 16001, 110002, 40400, 11503
 ## Title: |cff69ccf0PotionBot|r
-## Notes: Two buttons: food and water out of combat, health and mana potions in combat. Prioritizes healthstones and mana gems. Based on DrinkBot.
-## Author: twids (based on original DrinkBot by Funki)
+## Notes: Two buttons: food and water out of combat, health and mana potions in combat. Prioritizes healthstones and mana gems.
+## Author: twids
 ## Version: 5.5.0-forever-beta
 ## IconTexture: Interface\AddOns\PotionBot\logo.png
 ## SavedVariables: PotionBotVariables, PotionBotDiagnostics
