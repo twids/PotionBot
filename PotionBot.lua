@@ -1,435 +1,424 @@
---[[
-PotionBot - World of Warcraft Addon
-Based on DrinkBot by the original author
-Modified to work with health and mana potions instead of food and drinks
-Includes special prioritization for healthstones and mana gems
---]]
-
-local PotionBot = CreateFrame("FRAME", "PotionBot", UIParent)
-PotionBot:RegisterEvent("BAG_UPDATE_DELAYED")
-PotionBot:RegisterEvent("PLAYER_ENTERING_WORLD")
-PotionBot:RegisterEvent("PLAYER_LEVEL_UP")
-PotionBot:RegisterEvent("UNIT_AURA")
-PotionBot:SetScript("OnEvent", function(self, event, ...) self:OnEvent(event, ...) end)
-
--- Debug message to confirm addon is loading
--- print("|cff69ccf0PotionBot|r addon loaded successfully!")
-
+-- PotionBot: select bag consumables out of combat; the player activates the macros.
+local addonName = ... or "PotionBot"
+local VERSION = "5.5.0-forever-beta"
+local PotionBot = CreateFrame("Frame")
+local pending, queued = false, false
 local healthPotionCurrent, manaPotionCurrent = 0, 0
-local healthPotionID, manaPotionID = {}, {}
-local tooltipScan = CreateFrame("GameTooltip", "TooltipScan", nil, "GameTooltipTemplate")
-tooltipScan:SetOwner(UIParent, "ANCHOR_NONE")
-local tooltipScanBuff = CreateFrame("GameTooltip", "TooltipScanBuff", UIParent, "GameTooltipTemplate")
-tooltipScanBuff:SetOwner(UIParent, "ANCHOR_NONE")
+local foodCurrent, waterCurrent = 0, 0
+local PotionBotDB
+local report, waitingItems = {}, {}
+local tooltipRetries = 0
+local statOptions = {
+    {key="stamina", label="Stamina", terms={"stamina"}},
+    {key="strength", label="Strength", terms={"strength"}},
+    {key="agility", label="Agility", terms={"agility"}},
+    {key="intellect", label="Intellect", terms={"intellect"}},
+    {key="spirit", label="Spirit", terms={"spirit"}},
+    {key="spellpower", label="Spell power", terms={"spell power", "spell damage"}},
+    {key="attackpower", label="Attack power", terms={"attack power"}},
+    {key="healing", label="Healing", terms={"healing"}},
+}
+local statByKey = {}
+for _, option in ipairs(statOptions) do statByKey[option.key] = option end
 
-local _, _, _, tocversion = GetBuildInfo()
-local majorVersion = math.floor(tocversion / 10000)
+local function Message(text)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff69ccf0PotionBot|r: " .. text)
+end
 
-local gameVersion = majorVersion or 11
+local function NewReport()
+    local version, build, _, interface = GetBuildInfo()
+    report = {version=VERSION, client=version, build=build, interface=interface,
+        locale=GetLocale(), items={}, macros={}, scanned=0, missingTooltips=0}
+    PotionBotDiagnostics = report
+end
 
-local triggerWords = {"potion", "elixir", "flask", "healthstone", "mana gem"}
+-- Classic conjured items have names such as Mana Ruby, rather than "mana gem".
+local healthstones = {
+    [5512]=true, [5511]=true, [5509]=true, [5510]=true, [9421]=true,
+    [19004]=true, [19005]=true, [19006]=true, [19007]=true,
+    [19008]=true, [19009]=true, [19010]=true, [19011]=true,
+    [19012]=true, [19013]=true,
+}
+local manaGems = { [5514]=true, [5513]=true, [8007]=true, [8008]=true }
+
+local function InitializePotionBotDB()
+    if type(PotionBotVariables) ~= "table" then PotionBotVariables = {} end
+    if PotionBotVariables.healthPotionChecked == nil then PotionBotVariables.healthPotionChecked = true end
+    if PotionBotVariables.manaPotionChecked == nil then PotionBotVariables.manaPotionChecked = true end
+    if PotionBotVariables.preferWellFedChecked == nil then PotionBotVariables.preferWellFedChecked = true end
+    local order, seen = {}, {}
+    if type(PotionBotVariables.foodStatPriority) == "table" then
+        for _, key in ipairs(PotionBotVariables.foodStatPriority) do
+            if statByKey[key] and not seen[key] then order[#order+1] = key; seen[key] = true end
+        end
+    end
+    for _, option in ipairs(statOptions) do
+        if not seen[option.key] then order[#order+1] = option.key end
+    end
+    PotionBotVariables.foodStatPriority = order
+    PotionBotDB = PotionBotVariables
+end
+
+local function IsPublic(value)
+    return not issecretvalue or not issecretvalue(value)
+end
+
+local function WellFedState()
+    if not C_UnitAuras or not C_UnitAuras.GetAuraDataByIndex then return "unknown" end
+    local unknown = false
+    for index = 1, 255 do
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", index, "HELPFUL")
+        if not ok or not IsPublic(aura) then return "unknown" end
+        if not aura then return unknown and "unknown" or "missing" end
+        if IsPublic(aura.name) and type(aura.name) == "string" then
+            if aura.name:lower() == "well fed" then return "present" end
+        else
+            unknown = true
+        end
+    end
+    return "unknown"
+end
+
+local function TooltipLines(bag, slot)
+    local data = C_TooltipInfo.GetBagItem(bag, slot)
+    local lines = {}
+    if data and data.lines then
+        for _, line in ipairs(data.lines) do
+            if IsPublic(line.leftText) and type(line.leftText) == "string" then
+                lines[#lines + 1] = line.leftText:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+            end
+        end
+    end
+    return lines
+end
+
+local function Amount(text, resource, meal)
+    text = text:lower():gsub("\194\160", " ")
+    -- Meals are compared by restoration per second; combat items by instant amount.
+    if not (text:find("restor") or text:find("heals? ")) then return nil end
+    local seconds = text:match("over ([%d%.]+) sec")
+    if text:find("every %d") then return nil end
+    if meal then
+        seconds = tonumber(seconds)
+        if not seconds or seconds <= 0 then return nil end
+    else
+        if seconds then return nil end
+        seconds = 1
+    end
+    local percent = text:match("([%d%.]+)%% of [^%.]-" .. resource)
+        or text:match("([%d%.]+)%% " .. resource)
+    if percent then
+        local maximum
+        if resource == "health" then maximum = UnitHealthMax("player") else maximum = UnitPowerMax("player", 0) end
+        if IsPublic(maximum) and type(maximum) == "number" and maximum > 0 then
+            return maximum * tonumber(percent) / 100 / seconds
+        end
+        return nil
+    end
+    -- Match each resource independently, including dual-resource potions.
+    local low, high = text:match("([%d,%.]+) to ([%d,%.]+) " .. resource)
+    if low then return (tonumber((low:gsub(",", ""))) + tonumber((high:gsub(",", "")))) / 2 / seconds end
+    local fixed = text:match("([%d,%.]+) " .. resource)
+    if fixed then return tonumber((fixed:gsub(",", ""))) / seconds end
+end
+
+local function Better(candidate, current)
+    if not current then return true end
+    if candidate.special ~= current.special then return candidate.special end
+    if candidate.amount ~= current.amount then return candidate.amount > current.amount end
+    if candidate.conjured ~= current.conjured then return candidate.conjured end
+    return candidate.id < current.id
+end
+
+local function FoodStats(text)
+    local stats = {}
+    -- Read the benefit after Well Fed, not the food name or health/mana restoration.
+    local benefit = text:match("well[%s%-]+fed(.*)")
+    if not benefit then return stats end
+    for _, option in ipairs(statOptions) do
+        for _, term in ipairs(option.terms) do
+            local value = benefit:match("([%d,%.]+)%s+" .. term .. "%f[%A]")
+                or benefit:match(term .. " by ([%d,%.]+)")
+            if value then
+                stats[option.key] = math.max(stats[option.key] or 0, tonumber((value:gsub(",", ""))) or 0)
+            end
+        end
+    end
+    -- Classic food commonly shares a value: "gain 8 Stamina and Spirit".
+    local amount, first, second = benefit:match("([%d,%.]+)%s+(%a+)%s+and%s+(%a+)")
+    if amount and statByKey[first] and statByKey[second] then
+        local value = tonumber((amount:gsub(",", "")))
+        if value then stats[first] = stats[first] or value; stats[second] = stats[second] or value end
+    end
+    local spellBonus = benefit:match("damage done by magical spells and effects by up to ([%d,]+)")
+        or benefit:match("damage and healing done by magical spells and effects by up to ([%d,]+)")
+    if spellBonus then stats.spellpower = tonumber((spellBonus:gsub(",", ""))) end
+    local healingBonus = benefit:match("healing done by spells and effects by up to ([%d,]+)")
+    if healingBonus then stats.healing = tonumber((healingBonus:gsub(",", ""))) end
+    return stats
+end
+
+local function BetterBuffFood(candidate, current)
+    if not current then return true end
+    for _, key in ipairs(PotionBotDB.foodStatPriority) do
+        local a, b = candidate.stats[key] or 0, current.stats[key] or 0
+        if a ~= b then return a > b end
+    end
+    return Better(candidate, current)
+end
 
 local function ScanBags()
-    local healthPotions, manaPotions = {}, {}
-    local priorityHealthPotion, priorityManaPotion = nil, nil
-    local _, _, raceID = UnitRace("player")
-    
-    if raceID ~= 84 and raceID ~= 85 then
-        for bag = 0, NUM_BAG_SLOTS do
-            for slot = 1, C_Container.GetContainerNumSlots(bag) do
-                local itemLink = C_Container.GetContainerItemLink(bag, slot)
-                if itemLink then
-                    tooltipScan:SetOwner(UIParent, "ANCHOR_NONE")
-                    tooltipScan:SetHyperlink(itemLink)
-                    tooltipScan:Show()
-
-                    local healthAmount, manaAmount, healthSeconds, manaSeconds = nil, nil, nil, nil
-                    local isWellFed, isPriority, isPotion, isConjured, isHealthstone, isManaGem = false, false, false, false, false, false
-
-                    for i = 1, 10 do
-                        local lineText = _G["TooltipScanTextLeft" .. i]:GetText()
-                        if not lineText then break end
-
-                        if string.match(lineText, "Restores 100%% health and 100%% Mana over (%d+) sec") then
-                            isPriority = true
-                            healthAmount, manaAmount = 100, 100
-                            healthSeconds, manaSeconds = tonumber(string.match(lineText, "(%d+) sec")), tonumber(string.match(lineText, "(%d+) sec"))
-                        end
-
-                        if string.match(lineText, "Conjured Item") then
-                            isConjured = true
-                        end
-
-                        -- Check for healthstones (warlock created items)
-                        if string.match(lineText:lower(), "healthstone") then
-                            isHealthstone = true
-                            isPotion = true -- Treat healthstones as potions
-                            isPriority = true -- Healthstones should be prioritized
-                        end
-
-                        -- Check for mana gems (mage created items)
-                        if string.match(lineText:lower(), "mana gem") then
-                            isManaGem = true
-                            isPotion = true -- Treat mana gems as potions
-                            isPriority = true -- Mana gems should be prioritized
-                        end
-
-                        local healthPatterns = {
-                            {pattern = "([%d,%.]+) million health over (%d+) sec", multiplier = 1000000},
-                            {pattern = "([%d,]+) health over (%d+) sec", multiplier = 1},
-                            {pattern = "(%d+) health over (%d+) sec", multiplier = 1},
-                            {pattern = "([%d,%.]+) million health and ([%d,%.]+) million mana over (%d+) sec", multiplier = 1000000},
-                            {pattern = "([%d,]+) health and ([%d,]+) mana over (%d+) sec", multiplier = 1},
-                            {pattern = "(%d+) health and (%d+) mana over (%d+) sec", multiplier = 1},
-                            {pattern = "Restores (%d+) health", multiplier = 1}, -- Instant health potions
-                            {pattern = "Restores ([%d,]+) health", multiplier = 1}, -- Instant health potions with commas
-                            {pattern = "Restores (%d+) to (%d+) health", multiplier = 1}, -- Classic range healing (e.g., "Restores 70 to 90 health")
-                        }
-
-                        local manaPatterns = {
-                            {pattern = "([%d,%.]+) million mana over (%d+) sec", multiplier = 1000000},
-                            {pattern = "([%d,]+) mana over (%d+) sec", multiplier = 1},
-                            {pattern = "(%d+) mana over (%d+) sec", multiplier = 1},
-                            {pattern = "([%d,%.]+) million health and ([%d,%.]+) million mana over (%d+) sec", multiplier = 1000000},
-                            {pattern = "([%d,]+) health and ([%d,]+) mana over (%d+) sec", multiplier = 1},
-                            {pattern = "(%d+) health and (%d+) mana over (%d+) sec", multiplier = 1},
-                            {pattern = "Restores (%d+) mana", multiplier = 1}, -- Instant mana potions
-                            {pattern = "Restores ([%d,]+) mana", multiplier = 1}, -- Instant mana potions with commas
-                            {pattern = "Restores (%d+) to (%d+) mana", multiplier = 1}, -- Classic range mana (e.g., "Restores 140 to 180 mana")
-                        }
-
-                        for _, match in ipairs(healthPatterns) do
-                            if match.pattern == "Restores (%d+) to (%d+) health" then
-                                -- Handle range pattern specially
-                                local minHealth, maxHealth = string.match(lineText, match.pattern)
-                                if minHealth and maxHealth then
-                                    -- Use average of min and max for comparison
-                                    healthAmount = (tonumber(minHealth) + tonumber(maxHealth)) / 2 * match.multiplier
-                                    healthSeconds = 1 -- Instant effect
-                                end
-                            else
-                                local healthMatch, secondsMatch = string.match(lineText, match.pattern)
-                                if healthMatch and secondsMatch then
-                                    local sanitizedHealthMatch = healthMatch:gsub(",", "")
-                                    healthAmount = tonumber(sanitizedHealthMatch) * match.multiplier
-                                    healthSeconds = tonumber(secondsMatch)
-                                elseif healthMatch and not secondsMatch then
-                                    -- Instant potion
-                                    local sanitizedHealthMatch = healthMatch:gsub(",", "")
-                                    healthAmount = tonumber(sanitizedHealthMatch) * match.multiplier
-                                    healthSeconds = 1 -- Instant effect
-                                end
-                            end
-                        end
-
-                        for _, match in ipairs(manaPatterns) do
-                            if match.pattern == "Restores (%d+) to (%d+) mana" then
-                                -- Handle range pattern specially
-                                local minMana, maxMana = string.match(lineText, match.pattern)
-                                if minMana and maxMana then
-                                    -- Use average of min and max for comparison
-                                    manaAmount = (tonumber(minMana) + tonumber(maxMana)) / 2 * match.multiplier
-                                    manaSeconds = 1 -- Instant effect
-                                end
-                            else
-                                local manaMatch, secondsMatch = string.match(lineText, match.pattern)
-                                if manaMatch and secondsMatch then
-                                    local sanitizedManaMatch = manaMatch:gsub(",", "")
-                                    manaAmount = tonumber(sanitizedManaMatch) * match.multiplier
-                                    manaSeconds = tonumber(secondsMatch)
-                                elseif manaMatch and not secondsMatch then
-                                    -- Instant potion
-                                    local sanitizedManaMatch = manaMatch:gsub(",", "")
-                                    manaAmount = tonumber(sanitizedManaMatch) * match.multiplier
-                                    manaSeconds = 1 -- Instant effect
-                                end
-                            end
-                        end
-
-                        if string.match(lineText:lower(), "well fed") then
-                            isWellFed = true
-                        end
-
-                        if string.match(lineText:lower(), "potion") or 
-                           string.match(lineText:lower(), "elixir") or 
-                           string.match(lineText:lower(), "flask") or
-                           string.match(lineText:lower(), "gem") then
-                            isPotion = true
-                        end
+    NewReport()
+    local bestHealth, bestMana, bestFood, bestWater, bestBuffFood, bestPlainFood
+    local wellFed = WellFedState()
+    report.wellFed, report.preferWellFed = wellFed, PotionBotDB.preferWellFedChecked
+    report.foodStatPriority = PotionBotDB.foodStatPriority
+    local level = UnitLevel("player")
+    local bagSlots = NUM_BAG_SLOTS or (Constants and Constants.InventoryConstants and Constants.InventoryConstants.NumBagSlots) or 4
+    for bag = 0, bagSlots do
+        for slot = 1, C_Container.GetContainerNumSlots(bag) do
+            local id = C_Container.GetContainerItemID(bag, slot)
+            if id then
+                report.scanned = report.scanned + 1
+                local name, _, _, _, minLevel, _, _, _, _, _, _, classID, subclassID = C_Item.GetItemInfo(id)
+                local entry = {id=id, bag=bag, slot=slot, name=name, minLevel=minLevel,
+                    classID=classID, subclassID=subclassID}
+                if not name then
+                    entry.reason = "waiting for item data"
+                    if not waitingItems[id] then
+                        waitingItems[id] = true
+                        C_Item.RequestLoadItemDataByID(id)
                     end
-
-                    -- Process items that are potions, elixirs, flasks, or healthstones
-                    if healthAmount and healthSeconds and (isPotion or isHealthstone) and not isWellFed then
-                        local itemID = select(1, C_Item.GetItemInfoInstant(itemLink))
-                        if itemID then
-                            local itemType = select(7, C_Item.GetItemInfo(itemID))
-                            if itemType == "Consumable" then
-                                local healthPotion = {
-                                    id = itemID, 
-                                    rate = healthAmount / healthSeconds, 
-                                    isPriority = isPriority or isHealthstone, -- Healthstones are always priority
-                                    isConjured = isConjured, 
-                                    isHealthstone = isHealthstone,
-                                    quantity = C_Item.GetItemCount(itemID)
-                                }
-                                if isPriority or isHealthstone then
-                                    priorityHealthPotion = healthPotion
+                elseif minLevel and minLevel > level then
+                    entry.reason = "requires higher level"
+                else
+                    local lines = TooltipLines(bag, slot)
+                    local text = table.concat(lines, "\n"):lower()
+                    local itemName = name:lower()
+                    local stone = healthstones[id] or itemName:find("healthstone", 1, true) ~= nil
+                    local gem = manaGems[id] or itemName:find("mana gem", 1, true) ~= nil
+                    -- Class/subclass IDs are independent of the client's language.
+                    local potion = classID == 0 and subclassID == 1
+                    local meal = classID == 0 and subclassID == 5
+                    entry.reason = "not a restoration consumable"
+                    if potion or stone or gem or meal then
+                        entry.lines = lines
+                        local health, mana
+                        for _, line in ipairs(lines) do
+                            health = Amount(line, "health", meal) or health
+                            mana = Amount(line, "mana", meal) or mana
+                        end
+                        local conjured = text:find("conjured", 1, true) ~= nil
+                        entry.health, entry.mana = health, mana
+                        entry.reason = (health or mana) and "candidate" or "no readable restoration effect"
+                        entry.kind = meal and "food/drink" or "combat item"
+                        if #lines == 0 then
+                            entry.reason = "waiting for tooltip"
+                            report.missingTooltips = report.missingTooltips + 1
+                        end
+                        if meal then
+                            if health then
+                                local item = {id=id, amount=health, special=false, conjured=conjured}
+                                entry.wellFedFood = text:find("well[%s%-]+fed") ~= nil
+                                if entry.wellFedFood then
+                                    item.stats = FoodStats(text)
+                                    entry.foodStats = item.stats
+                                    if BetterBuffFood(item, bestBuffFood) then bestBuffFood = item end
                                 else
-                                    table.insert(healthPotions, healthPotion)
+                                    if Better(item, bestPlainFood) then bestPlainFood = item end
                                 end
+                                if Better(item, bestFood) then bestFood = item end
                             end
+                            if mana then
+                                local item = {id=id, amount=mana, special=false, conjured=conjured}
+                                if Better(item, bestWater) then bestWater = item end
+                            end
+                        elseif health and not gem then
+                            local item = {id=id, amount=health, special=stone, conjured=conjured}
+                            if Better(item, bestHealth) then bestHealth = item end
+                        end
+                        if not meal and mana and not stone then
+                            local item = {id=id, amount=mana, special=gem, conjured=conjured}
+                            if Better(item, bestMana) then bestMana = item end
                         end
                     end
-
-                    -- Process items that are potions, elixirs, flasks, mana gems, but not healthstones
-                    if manaAmount and manaSeconds and (isPotion or isManaGem) and not isWellFed and not isHealthstone then
-                        local itemID = select(1, C_Item.GetItemInfoInstant(itemLink))
-                        if itemID then
-                            local itemType = select(7, C_Item.GetItemInfo(itemID))
-                            if itemType == "Consumable" then
-                                local manaPotion = {
-                                    id = itemID, 
-                                    rate = manaAmount / manaSeconds, 
-                                    isPriority = isPriority or isManaGem, -- Mana gems are always priority
-                                    isConjured = isConjured, 
-                                    isManaGem = isManaGem,
-                                    quantity = C_Item.GetItemCount(itemID)
-                                }
-                                if isPriority or isManaGem then
-                                    priorityManaPotion = manaPotion
-                                else
-                                    table.insert(manaPotions, manaPotion)
-                                end
-                            end
-                        end
-                    end
-
-                    tooltipScan:Hide()
-                    tooltipScan:ClearLines()
+                end
+                if (#report.items < 80) and (not name or classID == 0 or healthstones[id] or manaGems[id]) then
+                    report.items[#report.items + 1] = entry
                 end
             end
         end
+    end
+    healthPotionCurrent = bestHealth and bestHealth.id or 0
+    manaPotionCurrent = bestMana and bestMana.id or 0
+    if PotionBotDB.preferWellFedChecked then
+        if wellFed == "missing" then
+            bestFood = bestBuffFood or bestPlainFood
+        else
+            -- An unreadable aura is not evidence that Well Fed is absent.
+            bestFood = bestPlainFood or bestBuffFood
+        end
+    end
+    foodCurrent = bestFood and bestFood.id or 0
+    waterCurrent = bestWater and bestWater.id or 0
+    report.health, report.mana = healthPotionCurrent, manaPotionCurrent
+    report.food, report.water = foodCurrent, waterCurrent
+    report.healthEnabled, report.manaEnabled = PotionBotDB.healthPotionChecked, PotionBotDB.manaPotionChecked
+end
+
+local function UpdateMacro(name, combatID, restID)
+    local index = GetMacroIndexByName(name)
+    -- Secure conditions choose the action and tooltip without editing during combat.
+    local choices = {}
+    if combatID > 0 then choices[#choices + 1] = "[combat] item:" .. combatID end
+    if restID > 0 then choices[#choices + 1] = "[nocombat] item:" .. restID end
+    local body = "#showtooltip"
+    if #choices > 0 then body = body .. "\n/use " .. table.concat(choices, "; ") end
+    if index == 0 then
+        local count, characterCount = GetNumMacros()
+        local limits = Constants and Constants.MacroConsts or {}
+        local accountMax = limits.MAX_ACCOUNT_MACROS or MAX_ACCOUNT_MACROS or 120
+        local characterMax = limits.MAX_CHARACTER_MACROS or MAX_CHARACTER_MACROS or 18
+        local perCharacter = count >= accountMax
+        if perCharacter and (characterCount or 0) >= characterMax then
+            report.macros[name] = {error="No free account or character macro slots"}
+            Message("No free macro slots for " .. name .. ".")
+            return
+        end
+        CreateMacro(name, "INV_MISC_QUESTIONMARK", body, perCharacter)
     else
-		-- Earthen race uses special items - skip for potion functionality
-		-- local earthenRocks = { 113509, 228494, 228493 }
-		-- We don't include earthen-specific items for potion functionality
-	end
-
-    local function sortItems(a, b)
-        -- Healthstones always come first for health items
-        if a.isHealthstone ~= b.isHealthstone then
-            return a.isHealthstone
-        end
-        -- Mana gems always come first for mana items
-        if a.isManaGem ~= b.isManaGem then
-            return a.isManaGem
-        end
-        if a.isPriority ~= b.isPriority then
-            return a.isPriority
-        end
-        if a.rate ~= b.rate then
-            return a.rate > b.rate
-        end
-        if a.isConjured ~= b.isConjured then
-            return a.isConjured
-        end
-        return a.id < b.id
+        local _, _, existing = GetMacroInfo(index)
+        if existing ~= body then EditMacro(index, name, "INV_MISC_QUESTIONMARK", body) end
     end
-
-    table.sort(healthPotions, sortItems)
-    table.sort(manaPotions, sortItems)
-
-    healthPotionID = {}
-    manaPotionID = {}
-
-    if priorityHealthPotion then table.insert(healthPotionID, priorityHealthPotion) end
-    for _, healthPotion in ipairs(healthPotions) do table.insert(healthPotionID, healthPotion) end
-
-    if priorityManaPotion then table.insert(manaPotionID, priorityManaPotion) end
-    for _, manaPotion in ipairs(manaPotions) do table.insert(manaPotionID, manaPotion) end
-end
-
-
-
-local function CreateOrUpdateMacro()
-
-    if not PotionBotDB then
-        PotionBotDB = PotionBotVariables
-    end
-
-    local healthPotionChecked = PotionBotDB.healthPotionChecked
-    local manaPotionChecked = PotionBotDB.manaPotionChecked
-
-    if healthPotionChecked then
-        local healthPotionIdx = GetMacroIndexByName("HealthPotionBot")
-        local healthline1 = "#showtooltip item:" .. healthPotionCurrent .. "\n"
-        local healthline2 = "/use [btn:1] item:" .. healthPotionCurrent
-
-        if PotionBotDrinking == true then
-            healthline2 = ""
-        end
-
-        if healthPotionIdx == 0 then
-            if GetNumMacros() >= 120 then
-                DEFAULT_CHAT_FRAME:AddMessage("|cff69ccf0PotionBot|r: |cffff0000WARNING|r: Unable to create |cff69ccf0HealthPotionBot|r macro. All of your Macro slots are already in use. Please delete a macro and /reload.")
-                return
-            end
-            CreateMacro("HealthPotionBot", "INV_MISC_QUESTIONMARK", healthline1 .. healthline2, nil)
-        else
-            EditMacro(healthPotionIdx, "HealthPotionBot", "INV_MISC_QUESTIONMARK", healthline1 .. healthline2)
-        end
-    end
-
-    if manaPotionChecked then
-        local manaPotionIdx = GetMacroIndexByName("ManaPotionBot")
-        local manaline1 = "#showtooltip item:" .. manaPotionCurrent .. "\n"
-        local manaline2 = "/use [btn:1] item:" .. manaPotionCurrent
-
-        if manaPotionIdx == 0 then
-            if GetNumMacros() >= 120 then
-                DEFAULT_CHAT_FRAME:AddMessage("|cff69ccf0PotionBot|r: |cffff0000WARNING|r: Unable to create |cff69ccf0ManaPotionBot|r macro. All of your Macro slots are already in use. Please delete a macro and /reload.")
-                return
-            end
-            CreateMacro("ManaPotionBot", "INV_MISC_QUESTIONMARK", manaline1 .. manaline2, nil)
-        else
-            EditMacro(manaPotionIdx, "ManaPotionBot", "INV_MISC_QUESTIONMARK", manaline1 .. manaline2)
-        end
-    end
-end
-
-local function PotionBotGo()
-    local playerLvl = UnitLevel("player")
-    ScanBags()
-
-    local firstHealthPotionWithQty, firstManaPotionWithQty = nil, nil
-
-    for _, healthPotion in ipairs(healthPotionID) do
-        local qtyInBags = C_Item.GetItemCount(healthPotion.id) or 0
-        local minLevel = select(5, C_Item.GetItemInfo(healthPotion.id)) or 0
-        if qtyInBags > 0 and minLevel <= playerLvl then
-            firstHealthPotionWithQty = healthPotion.id
-            break
-        end
-    end
-
-    for _, manaPotion in ipairs(manaPotionID) do
-        local qtyInBags = C_Item.GetItemCount(manaPotion.id) or 0
-        local minLevel = select(5, C_Item.GetItemInfo(manaPotion.id)) or 0
-        if qtyInBags > 0 and minLevel <= playerLvl then
-            firstManaPotionWithQty = manaPotion.id
-            break
-        end
-    end
-
-    if firstHealthPotionWithQty then
-        healthPotionCurrent = firstHealthPotionWithQty
-    end
-    
-    if firstManaPotionWithQty then
-        manaPotionCurrent = firstManaPotionWithQty
-    end
-
-    CreateOrUpdateMacro()
-end
-
-local function ScanAurasForBuffs()
-    local drinking = false
-
-    for i = 1, 40 do
-        local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
-        if not aura then
-            break
-        end
-        if aura.duration and aura.duration <= 35 then
-            local auraName = aura.name:lower()
-            for _, word in ipairs(triggerWords) do
-                if string.find(auraName, word) then
-                    drinking = true
-                    break
-                end
-            end
-            if drinking then
-                break
-            end
-        end
-    end
-
-    if PotionBotDrinking ~= drinking then
-        PotionBotDrinking = drinking
-        CreateOrUpdateMacro()
+    local actualIndex = GetMacroIndexByName(name)
+    local _, _, actualBody = GetMacroInfo(actualIndex)
+    report.macros[name] = {body=actualBody, expected=body, verified=actualIndex ~= 0 and actualBody == body}
+    if not report.macros[name].verified then
+        report.macros[name].error = "Macro write did not take effect"
+        Message("Could not update " .. name .. ". Run /pb diagnose.")
     end
 end
 
 local function RunPotionBot()
-    if C_Item.GetItemCount(healthPotionCurrent) >= 0 or C_Item.GetItemCount(manaPotionCurrent) >= 0 then
-        PotionBotGo()
+    if InCombatLockdown() then pending = true; return end
+    pending = false
+    InitializePotionBotDB()
+    ScanBags()
+    if PotionBotDB.healthPotionChecked then UpdateMacro("HealthPotionBot", healthPotionCurrent, foodCurrent) end
+    if PotionBotDB.manaPotionChecked then UpdateMacro("ManaPotionBot", manaPotionCurrent, waterCurrent) end
+end
+
+local QueueUpdate
+local function SafeRun()
+    local ok, err = pcall(RunPotionBot)
+    if not ok then
+        report.lastError = tostring(err)
+        PotionBotDiagnostics = report
+        Message("Update failed: " .. report.lastError)
+    elseif not pending and (report.missingTooltips or 0) > 0 and tooltipRetries < 3 then
+        tooltipRetries = tooltipRetries + 1
+        QueueUpdate()
     end
 end
 
-local function InitializePotionBotDB()
-    if not PotionBotVariables then
-		if gameVersion >= 4 then
-			PotionBotVariables = { healthPotionChecked = true, manaPotionChecked = true }
-		elseif gameVersion == 1 then
-			PotionBotVariables = { healthPotionChecked = true, manaPotionChecked = true }
-		end  
-    end
-    PotionBotDB = PotionBotVariables
+QueueUpdate = function()
+    pending = true
+    if queued or InCombatLockdown() then return end
+    queued = true
+    C_Timer.After(0.2, function()
+        queued = false
+        SafeRun() -- Recheck combat here: it may have started during the delay.
+    end)
 end
 
 local function OnCheckboxChanged(key, checked)
     PotionBotDB[key] = checked
     PotionBotVariables[key] = checked
-    RunPotionBot()
+    SafeRun()
 end
 
-local addonName = "PotionBot"
 local panel = CreateFrame("Frame")
 panel.name = addonName
 panel:Hide()
+local optionCheckboxes, priorityRows = {}, {}
+local panelBuilt = false
 
 local function createCheckbox(label, key)
-    local checkBox = CreateFrame("CheckButton", addonName .. "Check" .. label, panel, "InterfaceOptionsCheckButtonTemplate")
+    local checkBox = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
     checkBox:SetChecked(PotionBotDB[key])
     checkBox:HookScript("OnClick", function(self)
         local checked = self:GetChecked()
         OnCheckboxChanged(key, checked)
     end)
-    checkBox.Text:SetText(label)
+    local text = checkBox:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    text:SetPoint("LEFT", checkBox, "RIGHT", 2, 0)
+    text:SetText(label)
+    optionCheckboxes[key] = checkBox
     return checkBox
 end
 
+local function RefreshOptions()
+    for key, checkbox in pairs(optionCheckboxes) do checkbox:SetChecked(PotionBotDB[key]) end
+    for index, row in ipairs(priorityRows) do
+        local option = statByKey[PotionBotDB.foodStatPriority[index]]
+        row.label:SetText(index .. ". " .. option.label)
+        row.up:SetEnabled(index > 1)
+        row.down:SetEnabled(index < #priorityRows)
+    end
+end
+
+local function MovePriority(index, offset)
+    local other = index + offset
+    local order = PotionBotDB.foodStatPriority
+    if other < 1 or other > #order then return end
+    order[index], order[other] = order[other], order[index]
+    SafeRun()
+    RefreshOptions()
+end
+
 panel:SetScript("OnShow", function()
-local title = panel:CreateFontString("ARTWORK", nil, "GameFontHighlightLarge")
-title:SetPoint("TOPLEFT", 16, -16)
-title:SetText(addonName)
-title:SetTextColor(0.41, 0.8, 0.94) -- Blue color
-
-
-    local kindsTitle = panel:CreateFontString("ARTWORK", nil, "GameFontNormal")
-    kindsTitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -16)
-    kindsTitle:SetText("")
+    if panelBuilt then RefreshOptions(); return end
+    panelBuilt = true
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText(addonName)
+    title:SetTextColor(0.41, 0.8, 0.94)
 
     local keysAndLabels = {
-        {key = "manaPotionChecked", label = "Enable ManaPotionBot Macro"},
-		{key = "healthPotionChecked", label = "Enable HealthPotionBot Macro"},
+        {key = "manaPotionChecked", label = "Mana: water out of combat, potion/gem in combat"},
+        {key = "healthPotionChecked", label = "Health: food out of combat, potion/stone in combat"},
+        {key = "preferWellFedChecked", label = "Prefer Well Fed food when the buff is missing"},
     }
 
-    local index = 0
-    local rowHeight = 24
-    local columnWidth = 150
-    local rowNum = 10
-
-    for _, data in pairs(keysAndLabels) do
+    for index, data in ipairs(keysAndLabels) do
         local checkBox = createCheckbox(data.label, data.key)
-        local columnIndex = math.floor(index / rowNum)
-        local offsetRight = columnIndex * columnWidth
-        local offsetUp = -(index * rowHeight) + (rowHeight * rowNum * columnIndex) - 16
-        checkBox:SetPoint("TOPLEFT", kindsTitle, "BOTTOMLEFT", offsetRight, offsetUp)
-        index = index + 1
+        checkBox:SetPoint("TOPLEFT", 16, -44 - (index - 1) * 28)
     end
 
-    panel:SetScript("OnShow", nil)
+    local heading = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    heading:SetPoint("TOPLEFT", 16, -150)
+    heading:SetText("Food buff priority (highest first)")
+    local explanation = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    explanation:SetPoint("TOPLEFT", 16, -170)
+    explanation:SetText("Used when Well Fed is missing. Stronger stats win; then regeneration.")
+    for index = 1, #statOptions do
+        local position = index
+        local row = {}
+        row.label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+        row.label:SetPoint("TOPLEFT", 24, -202 - (index - 1) * 28)
+        row.up = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+        row.up:SetSize(48, 22)
+        row.up:SetPoint("TOPLEFT", 205, -198 - (index - 1) * 28)
+        row.up:SetText("Up")
+        row.up:SetScript("OnClick", function() MovePriority(position, -1) end)
+        row.down = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+        row.down:SetSize(48, 22)
+        row.down:SetPoint("LEFT", row.up, "RIGHT", 6, 0)
+        row.down:SetText("Down")
+        row.down:SetScript("OnClick", function() MovePriority(position, 1) end)
+        priorityRows[index] = row
+    end
+    RefreshOptions()
 end)
 
 local categoryId = nil
@@ -437,7 +426,7 @@ if InterfaceOptions_AddCategory then
     InterfaceOptions_AddCategory(panel)
 elseif Settings and Settings.RegisterAddOnCategory and Settings.RegisterCanvasLayoutCategory then
     local category = Settings.RegisterCanvasLayoutCategory(panel, panel.name)
-    categoryId = category.ID
+    categoryId = category:GetID()
     Settings.RegisterAddOnCategory(category)
 end
 
@@ -445,7 +434,39 @@ SLASH_PotionBot1 = "/pb"
 SLASH_PotionBot2 = "/pp"
 SLASH_PotionBot3 = "/potionbot"
 
-function SlashCmdList.PotionBot()
+local function ShowStatus()
+    Message(VERSION .. ": health item " .. healthPotionCurrent .. ", mana item " .. manaPotionCurrent)
+    Message("Out of combat: food item " .. foodCurrent .. ", water item " .. waterCurrent)
+    Message("Well Fed: " .. (report.wellFed or "unknown") ..
+        "; prefer buff food: " .. (PotionBotDB.preferWellFedChecked and "on" or "off"))
+    local labels = {}
+    for _, key in ipairs(PotionBotDB.foodStatPriority) do labels[#labels+1] = statByKey[key].label end
+    Message("Food buff priority: " .. table.concat(labels, " > "))
+    Message("Health macro " .. (PotionBotDB.healthPotionChecked and "enabled" or "disabled") ..
+        "; mana macro " .. (PotionBotDB.manaPotionChecked and "enabled" or "disabled"))
+    if pending then Message("Update pending until combat ends.") end
+    if report.lastError then Message("Last error: " .. report.lastError) end
+end
+
+function SlashCmdList.PotionBot(input)
+    local command = (input or ""):lower():match("^%s*(%S+)")
+    if command == "status" then ShowStatus(); return end
+    if command == "enable" then
+        PotionBotDB.healthPotionChecked, PotionBotDB.manaPotionChecked = true, true
+        QueueUpdate(); Message("Both macros enabled."); return
+    end
+    if command == "scan" or command == "diagnose" then
+        tooltipRetries = 0
+        SafeRun()
+        ShowStatus()
+        if command == "diagnose" then
+            for _, entry in ipairs(report.items or {}) do
+                Message("Item " .. entry.id .. " " .. (entry.name or "uncached") .. ": " .. entry.reason)
+            end
+            Message("Diagnostic saved. /reload writes it to PotionBot.lua in SavedVariables.")
+        end
+        return
+    end
     if InterfaceOptionsFrame_OpenToCategory then
         InterfaceOptionsFrame_OpenToCategory(panel)
         InterfaceOptionsFrame_OpenToCategory(panel)
@@ -454,29 +475,32 @@ function SlashCmdList.PotionBot()
     end
 end
 
-function PotionBot:OnEvent(event, ...)
-    if not InCombatLockdown() then
-        if event == "UNIT_AURA" then
-            local unit = ...
-            if unit == "player" then
-                ScanAurasForBuffs()
-            end
-        elseif event == "BAG_UPDATE_DELAYED" then
-            RunPotionBot()
+
+PotionBot:SetScript("OnEvent", function(self, event, ...)
+    if event == "ADDON_LOADED" then
+        if ... == addonName then
             InitializePotionBotDB()
-		elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_LEVEL_UP" then
-		    C_Timer.After(0.5, function()
-				if C_Item.GetItemCount(healthPotionCurrent) >= 0 or C_Item.GetItemCount(manaPotionCurrent) >= 0 then
-					PotionBotGo()
-				end
-			end)
-		end
+            QueueUpdate()
+            Message(VERSION .. " loaded. /pb status shows the selected items.")
+        end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if pending then QueueUpdate() end
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        local id, success = ...
+        if waitingItems[id] then
+            waitingItems[id] = nil
+            if success then QueueUpdate() end
+        end
+    elseif event == "UNIT_AURA" then
+        local unit = ...
+        if unit == "player" then QueueUpdate() end
+    else
+        tooltipRetries = 0
+        QueueUpdate()
     end
-end
-
-InitializePotionBotDB()
-
--- Initial scan on addon load
-C_Timer.After(1, function()
-    PotionBotGo()
 end)
+for _, event in ipairs({
+    "ADDON_LOADED", "PLAYER_ENTERING_WORLD", "BAG_UPDATE_DELAYED",
+    "PLAYER_LEVEL_UP", "PLAYER_REGEN_ENABLED", "GET_ITEM_INFO_RECEIVED", "UNIT_AURA",
+}) do PotionBot:RegisterEvent(event) end
+InitializePotionBotDB()
