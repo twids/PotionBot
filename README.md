@@ -6,8 +6,6 @@
 
 PotionBot is a World of Warcraft addon that automatically creates and updates two macros with the best food, water, health potions, and mana potions in your bags, prioritizing special items like Healthstones and Mana Gems.
 
-*Based on the original DrinkBot addon, with potion management and configurable food buff priorities.*
-
 ## Features
 
 - **Smart Consumable Detection**: Automatically scans your bags for food, water, health and mana potions, Healthstones, and Mana Gems
@@ -53,4 +51,4 @@ PotionBot is a World of Warcraft addon that automatically creates and updates tw
 
 ## Credits
 
-Based on the original DrinkBot concept, rewritten for potion management with food, water, and class-specific item support.
+Created and maintained by twids.
