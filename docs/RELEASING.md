@@ -30,8 +30,8 @@ against its source and normalizes ZIP timestamps and text line endings.
 1. Update the version in PotionBot.lua and PotionBot.toc to the same value.
 2. Update CHANGELOG.md, open a PR, and wait for Build and package to pass.
 3. Squash-merge the PR and update your local main checkout.
-4. Create and push an annotated vVERSION tag on that merged commit. For the
-   current version the tag would be v5.5.0-forever-beta.
+4. Create and push an annotated vVERSION tag on that merged commit, replacing
+   the example below with the version actually merged to main.
 
 ```shell
 git switch main
@@ -56,9 +56,10 @@ publish it or remove the incomplete draft and rerun the workflow.
 
 After the first tagged release is published, select the Forever installation in
 WowUp and use Install from URL with https://github.com/twids/PotionBot. This is a
-GitHub provider installation, not a separate WowUp catalog listing. Use the Beta
-channel where necessary for prereleases. A direct ZIP URL does not provide the
-same release tracking as the repository URL.
+GitHub provider installation. Use the Beta channel where necessary for
+prereleases. A direct ZIP URL does not provide the same release tracking as the
+repository URL. The separate WowUp Hub catalog listing must be verified after
+publication; an installable GitHub release alone does not prove it is searchable.
 
 Passing the workflow does not establish in-game compatibility. Check loading,
 macro activation, combat conditions, food buffs and the options panel in the

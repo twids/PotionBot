@@ -12,6 +12,7 @@ PotionBot is a World of Warcraft addon that automatically creates and updates tw
 - **Priority System**:
   - Healthstones are prioritized over health potions
   - Mana Gems are prioritized over mana potions
+  - Food and water are ranked by restoration per second, including percentage meals such as Candy Corn and Bobbing Apple
   - Higher restoration values are preferred; conjured items break ties
 - **Well Fed Support**: Prefers buff food when Well Fed is missing and ordinary food when the buff is already active
 - **Food Stat Priorities**: Arrange Stamina, Strength, Agility, Intellect, Spirit, Spell power, Attack power, and Healing with Up/Down buttons
@@ -44,10 +45,15 @@ PotionBot is a World of Warcraft addon that automatically creates and updates tw
 
 ## Installation
 
-1. Download and extract to your `Interface/AddOns/PotionBot/` folder
-2. Restart WoW or use `/reload`
-3. Configure through Interface Options or use `/pb`
-4. Drag "HealthPotionBot" and "ManaPotionBot" from `/macro` to your action bars
+After a release is published, select your WoW Forever installation in WowUp,
+choose **Get Addons → Install from URL**, and enter
+`https://github.com/twids/PotionBot`. Beta releases may require the Beta channel.
+See [releases](https://github.com/twids/PotionBot/releases) for available versions.
+
+Alternatively, download the Forever ZIP from a published release and extract its
+`PotionBot` folder into `Interface/AddOns/`. Restart WoW or use `/reload`, then
+configure the addon with `/pb` and drag "HealthPotionBot" and "ManaPotionBot"
+from `/macro` to your action bars.
 
 ## Credits
 

@@ -2,7 +2,7 @@
 ## Title: |cff69ccf0PotionBot|r
 ## Notes: Two buttons: food and water out of combat, health and mana potions in combat. Prioritizes healthstones and mana gems.
 ## Author: twids
-## Version: 5.5.0-forever-beta
+## Version: 5.5.2-forever-beta
 ## IconTexture: Interface\AddOns\PotionBot\logo.png
 ## SavedVariables: PotionBotVariables, PotionBotDiagnostics
 

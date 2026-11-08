@@ -1,6 +1,6 @@
 -- PotionBot: select bag consumables out of combat; the player activates the macros.
 local addonName = ... or "PotionBot"
-local VERSION = "5.5.0-forever-beta"
+local VERSION = "5.5.2-forever-beta"
 local PotionBot = CreateFrame("Frame")
 local pending, queued = false, false
 local healthPotionCurrent, manaPotionCurrent = 0, 0
@@ -39,6 +39,8 @@ local healthstones = {
     [19008]=true, [19009]=true, [19010]=true, [19011]=true,
     [19012]=true, [19013]=true,
 }
+-- Forever classifies Hallow's End Candy Corn as Other rather than Food & Drink.
+local seasonalMeals = { [20389]=true }
 local manaGems = { [5514]=true, [5513]=true, [8007]=true, [8008]=true }
 
 local function InitializePotionBotDB()
@@ -80,40 +82,56 @@ local function WellFedState()
 end
 
 local function TooltipLines(bag, slot)
-    local data = C_TooltipInfo.GetBagItem(bag, slot)
     local lines = {}
-    if data and data.lines then
+    -- A missing/restricted tooltip is a cache miss, not a failed bag scan.
+    -- The caller already bounds retries for empty tooltips.
+    local ok = pcall(function()
+        if not (C_TooltipInfo and C_TooltipInfo.GetBagItem) then return end
+        local data = C_TooltipInfo.GetBagItem(bag, slot)
+        if not IsPublic(data) or type(data) ~= "table" or not IsPublic(data.lines) or type(data.lines) ~= "table" then return end
         for _, line in ipairs(data.lines) do
-            if IsPublic(line.leftText) and type(line.leftText) == "string" then
+            if not IsPublic(line) or type(line) ~= "table" then error("Unreadable tooltip line") end
+            if not IsPublic(line.leftText) then error("Restricted tooltip text") end
+            if type(line.leftText) == "string" then
                 lines[#lines + 1] = line.leftText:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
             end
         end
-    end
-    return lines
+    end)
+    return ok and lines or {}
 end
 
 local function Amount(text, resource, meal)
     text = text:lower():gsub("\194\160", " ")
+    -- Forever Healthstones use "life" where other items use "health".
+    text = text:gsub("%f[%a]life%f[%A]", "health")
     -- Meals are compared by restoration per second; combat items by instant amount.
     if not (text:find("restor") or text:find("heals? ")) then return nil end
     local seconds = text:match("over ([%d%.]+) sec")
-    if text:find("every %d") then return nil end
+    local tick = text:match("every ([%d%.]+) sec")
+    local perSecond = text:find("per second", 1, true) or text:find("per sec", 1, true)
     if meal then
-        seconds = tonumber(seconds)
+        seconds = perSecond and 1 or tonumber(tick or seconds)
         if not seconds or seconds <= 0 then return nil end
     else
-        if seconds then return nil end
+        if seconds or tick or perSecond then return nil end
         seconds = 1
     end
-    local percent = text:match("([%d%.]+)%% of [^%.]-" .. resource)
-        or text:match("([%d%.]+)%% " .. resource)
-    if percent then
-        local maximum
-        if resource == "health" then maximum = UnitHealthMax("player") else maximum = UnitPowerMax("player", 0) end
-        if IsPublic(maximum) and type(maximum) == "number" and maximum > 0 then
-            return maximum * tonumber(percent) / 100 / seconds
+    -- A percentage may apply to both resources, or each may have its own value.
+    -- Stop at the next number so a health percentage cannot absorb a mana value.
+    for percent, effect in text:gmatch("([%d%.]+)%%([^%d%%%.]*)") do
+        effect = effect:gsub("^%s*of%s+", ""):gsub("^%s*your%s+", "")
+            :gsub("^%s*total%s+", ""):gsub("^%s*maximum%s+", ""):gsub("^%s+", "")
+        local applies = effect:match("^" .. resource .. "%f[%A]")
+            or effect:match("^health and " .. resource .. "%f[%A]")
+            or effect:match("^mana and " .. resource .. "%f[%A]")
+        if applies then
+            local maximum
+            if resource == "health" then maximum = UnitHealthMax("player") else maximum = UnitPowerMax("player", 0) end
+            if IsPublic(maximum) and type(maximum) == "number" and maximum > 0 then
+                return maximum * tonumber(percent) / 100 / seconds
+            end
+            return nil
         end
-        return nil
     end
     -- Match each resource independently, including dual-resource potions.
     local low, high = text:match("([%d,%.]+) to ([%d,%.]+) " .. resource)
@@ -199,7 +217,7 @@ local function ScanBags()
                     local gem = manaGems[id] or itemName:find("mana gem", 1, true) ~= nil
                     -- Class/subclass IDs are independent of the client's language.
                     local potion = classID == 0 and subclassID == 1
-                    local meal = classID == 0 and subclassID == 5
+                    local meal = classID == 0 and (subclassID == 5 or seasonalMeals[id])
                     entry.reason = "not a restoration consumable"
                     if potion or stone or gem or meal then
                         entry.lines = lines
@@ -491,7 +509,7 @@ PotionBot:SetScript("OnEvent", function(self, event, ...)
             waitingItems[id] = nil
             if success then QueueUpdate() end
         end
-    elseif event == "UNIT_AURA" then
+    elseif event == "UNIT_AURA" or event == "UNIT_MAXHEALTH" or event == "UNIT_MAXPOWER" then
         local unit = ...
         if unit == "player" then QueueUpdate() end
     else
@@ -501,6 +519,6 @@ PotionBot:SetScript("OnEvent", function(self, event, ...)
 end)
 for _, event in ipairs({
     "ADDON_LOADED", "PLAYER_ENTERING_WORLD", "BAG_UPDATE_DELAYED",
-    "PLAYER_LEVEL_UP", "PLAYER_REGEN_ENABLED", "GET_ITEM_INFO_RECEIVED", "UNIT_AURA",
+    "PLAYER_LEVEL_UP", "PLAYER_REGEN_ENABLED", "GET_ITEM_INFO_RECEIVED", "UNIT_AURA", "UNIT_MAXHEALTH", "UNIT_MAXPOWER",
 }) do PotionBot:RegisterEvent(event) end
 InitializePotionBotDB()

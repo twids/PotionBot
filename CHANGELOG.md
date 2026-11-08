@@ -1,3 +1,19 @@
+## 5.5.2-forever-beta
+
+- Treat missing, failing or restricted tooltip data as unavailable for that item;
+  continue scanning other bag items with bounded tooltip retries.
+- Reject partial tooltip text rather than ranking an incomplete restoration effect.
+- Verify failure isolation, retry limits and recovery when readable data returns.
+
+## 5.5.1-forever-beta
+
+- Recognize Healthstone tooltips that restore life, preserving priority over healing potions.
+- Recognize Forever Candy Corn in the Other consumable subclass.
+
+- Recognize percentage-per-second food such as Candy Corn and Bobbing Apple for both health and mana.
+- Compare shared or separate resource percentages and periodic meal ticks by restoration per second.
+- Refresh percentage meal rankings when maximum health or mana changes.
+
 ## 5.5.0-forever-beta
 
 - Add a saved food-stat priority list with Up/Down controls in /pb, including Spirit.

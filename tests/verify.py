@@ -194,8 +194,12 @@ assert(PotionBotDiagnostics.macros.HealthPotionBot.error == 'Macro write did not
 rejectMacroWrite = false
 local savedAPI = C_TooltipInfo; C_TooltipInfo = nil
 fire('BAG_UPDATE_DELAYED'); flush()
-assert(PotionBotDiagnostics.lastError, 'Record a real scan API failure')
+assert(not PotionBotDiagnostics.lastError and PotionBotDiagnostics.missingTooltips == 1, 'Missing tooltip API is a bounded cache miss')
 C_TooltipInfo = savedAPI
+local savedContainerAPI = C_Container; C_Container = nil
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.lastError, 'Record a real scan API failure')
+C_Container = savedContainerAPI
 items[117] = {subclass=5, lines={'Tough Jerky', 'Use: Restores 61.2 health over 18 sec.'}}
 items[159] = {subclass=5, lines={'Refreshing Spring Water', 'Use: Restores 151 mana over 18 sec.'}}
 items[858].lines = {'Use: Restores 140 to 180 health.'}
@@ -274,6 +278,97 @@ assert(#PotionBotVariables.foodStatPriority == 8 and PotionBotVariables.foodStat
 fire('ADDON_LOADED','PotionBot'); flush()
 assert(PotionBotVariables.foodStatPriority[1] == 'spirit')
 ''')
+lua.execute(r'''
+-- Percentage meals: use each resource's maximum and compare rates, not duration.
+items[20416] = {subclass=5, lines={'Bobbing Apple', 'Use: Restores 3% of your health and mana per second for 25 sec. Must remain seated while eating.'}}
+items[20389] = {subclass=8, lines={'Candy Corn', 'Use: Restores 3% of your health and mana per second for 25 sec. Must remain seated while eating.'}}
+auras = {}; bags = {20416,117,159,858,2455}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.food == 20416 and PotionBotDiagnostics.water == 20416)
+assert(PotionBotDiagnostics.items[1].health == 30 and PotionBotDiagnostics.items[1].mana == 24)
+assert(macros.HealthPotionBot == '#showtooltip\n/use [combat] item:858; [nocombat] item:20416')
+assert(macros.ManaPotionBot == '#showtooltip\n/use [combat] item:2455; [nocombat] item:20416')
+bags = {20389}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.food == 20389 and PotionBotDiagnostics.water == 20389)
+-- Exact Bobbing Apple tooltip and metadata saved by Forever build 70450.
+items[20516] = {subclass=5, lines={'Bobbing Apple', 'Soulbound', 'Unique (5)', 'Use: Restores 2% of your health per second for 24 sec.  Must remain seated while eating.  If you spend at least 10 seconds eating you will become well fed and gain Stamina and Spirit for 15 min.'}}
+bags = {20516,159}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.food == 20516 and PotionBotDiagnostics.water == 159)
+assert(PotionBotDiagnostics.items[1].health == 20 and PotionBotDiagnostics.items[1].mana == nil)
+items[90006] = {subclass=5, lines={'Faster Health Meal', 'Use: Restores 720 health over 18 sec.'}}
+bags = {20416,90006}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.food == 90006 and PotionBotDiagnostics.water == 20416, 'Compare health and mana rates independently')
+items[20416].lines = {'Use: Restores 3% of your health and 2% of your mana per second for 25 sec.'}
+bags = {20416}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.items[1].health == 30 and PotionBotDiagnostics.items[1].mana == 16, 'Separate percentages must not borrow another resource value')
+items[20416].lines = {'Use: Restores 3% of your health per second for 25 sec.'}
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.food == 20416 and PotionBotDiagnostics.water == 0, 'Health-only meal must not restore mana')
+items[20416].lines = {'Use: Restores 6% of your health and mana every 2 sec for 25 sec.'}
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.items[1].health == 30 and PotionBotDiagnostics.items[1].mana == 24, 'Normalize periodic ticks')
+items[20416].lines = {'Use: Restores 75% of your health and mana over 25 sec.'}
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.items[1].health == 30 and PotionBotDiagnostics.items[1].mana == 24, 'Shared total percentage')
+local healthMax, powerMax = UnitHealthMax, UnitPowerMax
+UnitHealthMax = function() return 2000 end; UnitPowerMax = function() return 0 end
+fire('UNIT_MAXHEALTH','player'); flush()
+assert(PotionBotDiagnostics.items[1].health == 60 and PotionBotDiagnostics.water == 0)
+UnitHealthMax = function() return secret end; UnitPowerMax = function() return secret end
+fire('UNIT_MAXPOWER','player'); flush()
+assert(PotionBotDiagnostics.food == 0 and PotionBotDiagnostics.water == 0, 'Restricted maxima must not be read arithmetically')
+UnitHealthMax, UnitPowerMax = healthMax, powerMax
+items[20416].subclass = 1
+items[20416].lines = {'Use: Restores 3% of your health and mana per second for 25 sec.'}
+bags = {20416,858,2455}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.health == 858 and PotionBotDiagnostics.mana == 2455, 'Periodic effects must stay out of combat slots')
+''')
+print('PASS: Percentage meals, shared and separate resources, per-second and tick rates, food ranking, macro bodies, changing/restricted maxima and combat exclusion')
+
+lua.execute(r'''
+-- Exact Healthstone tooltip and subclass saved by Forever build 70450.
+items[5512] = {name='Minor Healthstone', subclass=8, lines={'Minor Healthstone', 'Conjured Item', 'Unique', 'Use: Instantly restores 120 life.', '<Made by Lil Wrenchgleam>'}}
+items[118].lines = {'Minor Healing Potion', 'Use: Restores 70 to 90 health.'}
+bags = {5512,118}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.health == 5512, 'Real life wording must select Healthstone over potion')
+assert(PotionBotDiagnostics.items[1].health == 120)
+assert(macros.HealthPotionBot == '#showtooltip\n/use [combat] item:5512', 'Verify actual health macro body')
+items[5511] = {name='Lesser Healthstone', subclass=8, lines={'Lesser Healthstone', 'Conjured Item', 'Use: Instantly restores 250 life.'}}
+items[118].lines = {'Use: Restores 900 health.'}
+bags = {118,5512,5511}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.health == 5511, 'Best stone must beat even a larger potion')
+assert(macros.HealthPotionBot == '#showtooltip\n/use [combat] item:5511')
+bags = {118}; fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.health == 118, 'Fall back when stones are exhausted')
+''')
+print('PASS: Captured Forever life tooltip, Minor/Lesser Healthstone priority and actual macro body')
+
+lua.execute(r'''
+local original = C_TooltipInfo.GetBagItem
+items[118].lines = {'Use: Restores 70 to 90 health.'}
+items[2455].lines = {'Use: Restores 140 to 180 mana.'}
+bags = {118,2455}
+C_TooltipInfo.GetBagItem = function(bag, slot)
+    if slot == 1 then error('Tooltip unavailable on this client') end
+    return original(bag, slot)
+end
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(not PotionBotDiagnostics.lastError, 'One tooltip failure must not abort the scan')
+assert(PotionBotDiagnostics.health == 0 and PotionBotDiagnostics.mana == 2455)
+assert(PotionBotDiagnostics.missingTooltips == 1)
+for i=1,5 do flush() end
+assert(#timers == 0, 'Unavailable tooltip retries remain bounded')
+C_TooltipInfo.GetBagItem = function(bag, slot)
+    if slot == 1 then return {lines={{leftText='Use: Restores 900 health.'},{leftText=secret}}} end
+    return original(bag, slot)
+end
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.health == 0, 'Do not rank a partially restricted tooltip')
+C_TooltipInfo.GetBagItem = original
+fire('BAG_UPDATE_DELAYED'); flush()
+assert(PotionBotDiagnostics.health == 118 and PotionBotDiagnostics.mana == 2455, 'Recover when tooltip becomes readable')
+''')
+print('PASS: Isolated tooltip API errors, no partial rankings, bounded retries and recovery')
+
 print('PASS: Real Forever food stat text, shared stat values, primary/secondary ranking, GUI Up/Down callbacks, immediate reselection, reopening settings, saved priority validation and reload persistence')
 print('PASS: Health uses food, mana uses water, conditional Well Fed priority, buff gained/lost, preference disabled, secret aura and combat deferral')
 print('PASS: Food and water, decimal restoration, secure combat/nocombat branches, no macro rewrites at combat start, combined meals, missing food/water, level and non-food filtering')
